@@ -67,7 +67,8 @@ def main():
     parse_job(args[0])
     
     # Setup the folders
-    setup_folders()
+    if not options.kill:
+        setup_folders()
     
     # Get the user's robo password
     userpassword = getpass.getpass()
@@ -106,8 +107,8 @@ def ssh_run_exes(userpass, kill_procs):
                 cmd += " >& run_log.log &"
             stdin, stdout, stderr = ssh.exec_command(cmd)
             
-            logging.debug(stdout.readlines())
-            logging.debug(stderr.readlines())
+            # logging.debug(stdout.readlines())
+            # logging.debug(stderr.readlines())
             logging.debug(cmd)
 
         ssh.close()
