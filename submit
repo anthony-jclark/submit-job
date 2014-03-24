@@ -1,0 +1,253 @@
+#!/usr/bin/env python
+""" Run a program on the robot nodes
+
+This script should be run from one of the robo nodes.
+
+---------------------------------------------------------------------------
+Usage: submit.py [job_file|-g|-h]
+
+Options:
+  -h, --help        show this help message and exit
+  -g, --generate    generate a default job_file and config directory
+  -k, --kill        kill all previously created processes
+
+Arguments:
+    job_file    : input file with the following format
+        username = [user's name on the robo nodes]
+        nodes = [list of robo nodes (or single node)]
+        foldername = [name of folders to be created]
+        numreps = [number of replicates]
+        exename = [name of executable]
+        exeinput = [input given to the exe]
+        exeseeds = [can be either "integer", "uniform", or a list]
+
+Notes:
+    Current directory must contain a "config" folder. The contents of this 
+    folder will be copied into the newly created folders.
+---------------------------------------------------------------------------
+
+"""
+
+import os
+import shutil
+import subprocess
+import logging
+import optparse
+import getpass
+import random
+
+import paramiko
+
+# Set the logging configuration
+loggingFormat = "%(asctime)s %(levelname)s %(message)s"
+logging.basicConfig(level=logging.INFO, format=loggingFormat)
+
+# Job file defaults
+username = None
+nodes = [1]
+foldername = "experiment"
+numreps = 5
+exename = None
+exeinput = ""
+exeseeds = []
+
+# Submit a job on the robo-nodes
+def main():
+    """Run instances of a given program on the robo node(s)"""
+    
+    # Parse the command line
+    options, args = parse_args()
+    
+    # Option: Generate job_file and config directory
+    if options.generate:
+        generate_files()
+        exit()
+    
+    # Parse the job data
+    parse_job(args[0])
+    
+    # Setup the folders
+    setup_folders()
+    
+    # Get the user's robo password
+    userpassword = getpass.getpass()
+    
+    # Login to each node and run the executable
+    ssh_run_exes(userpassword, options.kill)
+
+def ssh_run_exes(userpass, kill_procs):
+    """"""
+    
+    # Login to the nodes and run the executables
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    for nodei, node in enumerate(nodes):
+        
+        # Create hostname (e.g. robo1.cse.msu.edu)
+        robohost = "robo" + str(node) + ".cse.msu.edu"
+        
+        ssh.connect(robohost, username=username, password=userpass)
+        for rep in range(numreps):
+            
+            # Change directory
+            seedi = nodei*numreps + rep
+            seedval = str(exeseeds[seedi]).replace(".","p")
+            fullname = os.getcwd() + "/robo" + str(node)
+            fullname +=  "/" + foldername + "_" + str(seedval)
+            cmd = "cd " + fullname
+            
+            # Either kill or exec the processes
+            if kill_procs:
+                cmd += "; killall " + exename;
+            else:
+                # Run program in the background
+                args = exeinput.replace("%s", str(exeseeds[seedi]))
+                cmd += "; nohup " + exename + " " + args
+                cmd += " >& run_log.log &"
+            stdin, stdout, stderr = ssh.exec_command(cmd)
+            
+            logging.debug(stdout.readlines())
+            logging.debug(stderr.readlines())
+            logging.debug(cmd)
+
+        ssh.close()
+
+def setup_folders():
+    """"""
+    
+    # Check for the config folder
+    if not os.path.exists("config"):
+        logging.error("'Config' folder does not exist.")
+        exit()
+        
+    # For each robo node
+    for nodei, node in enumerate(nodes):
+        
+        # Create the folders and move the application
+        for rep in range(numreps):
+            
+            # Name of the folder
+            seedi = nodei*numreps + rep
+            seedval = str(exeseeds[seedi]).replace(".","p")
+            fullname = os.getcwd() + "/robo" + str(node)
+            fullname +=  "/" + foldername + "_" + str(seedval)
+            if os.path.exists(fullname):
+                logging.error("Folder already exists: " + fullname)
+                exit()
+
+            # Copy the config folder data
+            shutil.copytree("config", fullname)
+    
+def parse_job(jobfilename):
+    """Parse the submitted job file (format above)"""
+    
+    # Must be global to alter the values
+    global exeseeds
+    global nodes
+    
+    # Check that the job file exists
+    if not os.path.exists(jobfilename):
+        logging.error("Job_file not found: " + jobfilename)
+        exit()
+    
+    # Run the job file (add to globals namespace)
+    execfile(jobfilename, globals())
+    
+    # Check required variables
+    if not username:
+        logging.error("Must provide a username: " + jobfilename)
+        exit()
+    if not exename:
+        logging.error("Must provide an exename: " + jobfilename)
+        exit()
+    if not nodes:
+        logging.error("nodes cannot be empty: " + jobfilename)
+        exit()
+    if isinstance(nodes, int):
+        nodes = [nodes]
+    badnodes = [i for i,val in enumerate(nodes) if (val>10 or val<1)]
+    if badnodes:
+        logging.error("nodes must be integers [1,10]: " + jobfilename)
+        exit()
+    if numreps<0:
+        logging.error("numreps must be greater than zero: " + jobfilename)
+        exit()
+    if isinstance(exeseeds, basestring):
+        maxseed = len(nodes)*numreps + 1
+        if exeseeds is "integer":
+            exeseeds = range(1, maxseed)
+        elif exeseeds is "uniform":
+            exeseeds = [round(i*(1.0/maxseed),3) for i in range(1,maxseed)]
+        else:
+            logging.error("exeseeds must be 'integer', " \
+                    "'uniform' or a list: " + jobfilename)
+            exit()
+    elif len(exeseeds) != (len(nodes) * numreps):
+        logging.error("len(exeseeds) must be equal to " \
+                    "len(nodes) * numreps:" + jobfilename)
+        exit()
+    
+def generate_files():
+    """Generate a default job_file and the config directory"""
+    
+    # Generate a default job_file if necessary
+    genfilename = "job_file"
+    if os.path.exists(genfilename):
+        logging.info("'job_file' already exists.")
+    else:
+        genfile = open(genfilename, "w")
+        genfile.write( \
+                "username = '<user>'\n" \
+                "nodes = [1]\n" \
+                "foldername = 'experiment'\n" \
+                "numreps = 1\n" \
+                "exename = '<exe>'\n" \
+                "exeinput = '%s'\n" \
+                "exeseeds = 'integer'\n" \
+                )
+        genfile.close()
+    
+    # Generate the config directory if necessary
+    gendirname = "config"
+    if os.path.exists(gendirname):
+        logging.info("'config' directory already exists")
+    else:
+        os.makedirs(gendirname)
+        
+    
+def parse_args():
+    """Parse the command line"""
+    
+    # Setup the parser
+    usage = "Usage: %prog [job_file|-g|-h|-k]"
+    parser = optparse.OptionParser(usage)
+    parser.add_option("-g", "--generate", action="store_true", default=False, \
+            help="generate a default job_file and config directory")
+    parser.add_option("-k", "--kill", action="store_true", default=False, \
+            help="kill all previously created processes")
+                      
+    # Parse the arguments
+    (options, args) = parser.parse_args()
+    
+    # One required argument (job_file)
+    if not options.generate and len(args) != 1:
+        parser.error("incorrect number of arguments")
+        
+    return options, args
+    
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
